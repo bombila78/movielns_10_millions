@@ -83,7 +83,7 @@ applyUsersAndMoviesNumberFromOneDatasetToAnother <- function(datasetWithNumbers,
     left_join(distinct(train_movie_ids_and_numbers), by="movieId")
 }
 
-
+MEAN_RATING = mean(edx$rating)
 # Randomly initializes 1 vector for factorization matrix
 # Depends on matrix rank
 randomlyInitialiseFactorizationVector <- function(length, matrixRank = 2, maxRating = 5) {
@@ -119,66 +119,72 @@ initialiseMovieFactorizationMatrix <- function(nrow, ncol = 2) {
   movieFactorizationMatrix
 }
 
+allFactorsMultipliedExceptColumn <- function(matrix_1, matrix_2, row_1, row_2, col) {
+  result <- 0
+  for (column in 1:ncol(matrix_1)) {
+    if (column != col) {
+      result = result + matrix_1[row_1, column] * matrix_2[row_2, column]
+    }
+  }
+  
+  result
+}
+
 # Makes one epoch optimization for user factorization matrix
-update2ColUserFactorizationMatrix <- function(dataset, lambda, userMatrix, movieMatrix) {
-  userMatrix[,1] <- dataset %>% 
-    mutate(
-      numerator = movieMatrix[movie_number,1] * (rating - movieMatrix[movie_number,2] * userMatrix[user_number,2]),
-      denominator = movieMatrix[movie_number,1]**2
-    ) %>%
-    group_by(user_number) %>%
-    summarise(new_u_1 = sum(numerator)/(sum(denominator)+ lambda)) %>%
-    arrange(user_number) %>%
-    .$new_u_1
-  
-  userMatrix[,2] <- dataset %>% 
-    mutate(
-      numerator = movieMatrix[movie_number,2] * (rating - movieMatrix[movie_number,1] * userMatrix[user_number,1]),
-      denominator = movieMatrix[movie_number,2]**2
-    ) %>%
-    group_by(user_number) %>%
-    summarise(new_u_2 = sum(numerator)/(sum(denominator)+ lambda)) %>%
-    arrange(user_number) %>%
-    .$new_u_2
-  
+updateUserFactorizationMatrix <- function(dataset, lambda, userMatrix, movieMatrix) {
+  for (col in 1:ncol(userMatrix)) {
+    userMatrix[,col] <- dataset %>% 
+      mutate(
+        numerator = movieMatrix[movie_number,col] * (rating - allFactorsMultipliedExceptColumn(userMatrix, movieMatrix, user_number, movie_number, col)),
+        denominator = movieMatrix[movie_number,col]**2
+      ) %>%
+      group_by(user_number) %>%
+      summarise(new_u_col = sum(numerator)/(sum(denominator)+ lambda)) %>%
+      arrange(user_number) %>%
+      .$new_u_col
+  }
   userMatrix
 }
 
 # Makes one epoch optimization for movie factorization matrix
-update2ColMovieFactorizationMatrix <- function(dataset, lambda, userMatrix, movieMatrix) {
-  movieMatrix[,1] <- dataset %>% 
-    mutate(
-      numerator = userMatrix[user_number,1] * (rating - userMatrix[user_number,2] * movieMatrix[movie_number,2]),
-      denominator = userMatrix[user_number,1]**2
-    ) %>%
-    group_by(movie_number) %>%
-    summarise(new_m_1 = sum(numerator)/(sum(denominator)+ lambda)) %>%
-    arrange(movie_number) %>%
-    .$new_m_1
-  
-  movieMatrix[,2] <- dataset %>% 
-    mutate(
-      numerator = userMatrix[user_number,2] * (rating - userMatrix[user_number,1] * movieMatrix[movie_number,1]),
-      denominator = userMatrix[user_number,2]**2
-    ) %>%
-    group_by(movie_number) %>%
-    summarise(new_m_2 = sum(numerator)/(sum(denominator)+ lambda)) %>%
-    arrange(movie_number) %>%
-    .$new_m_2
+updateMovieFactorizationMatrix <- function(dataset, lambda, userMatrix, movieMatrix) {
+  for (col in 1:ncol(movieMatrix)) {
+    movieMatrix[,col] <- dataset %>% 
+      mutate(
+        numerator = userMatrix[user_number,col] * (rating - allFactorsMultipliedExceptColumn(userMatrix, movieMatrix, user_number, movie_number, col)),
+        denominator = userMatrix[user_number,col]**2
+      ) %>%
+      group_by(movie_number) %>%
+      summarise(new_m_col = sum(numerator)/(sum(denominator)+ lambda)) %>%
+      arrange(movie_number) %>%
+      .$new_m_col
+  }
   
   movieMatrix
 }
 
+# Counts rating estimation for given user and movie
+getRatingHat <- function(user_number, movie_number, userMatrix, movieMatrix) {
+  if (is.na(user_number)) {
+    userVector <- colMeans(userMatrix)
+  } else {
+    userVector <- userMatrix[user_number,]
+  }
+  
+  if (is.na(movie_number)) {
+    movieVector <- colMeans(movieMatrix)
+  } else {
+    movieVector <- movieMatrix[movie_number,]
+  }
+  
+  sum(userVector * movieVector)
+}
+
 # Returns dataset with estimations based on provided factorization matrices
-get2RankEstimations <- function(dataset, userMatrix, movieMatrix) {
+getRankEstimations <- function(dataset, userMatrix, movieMatrix) {
   datasetWithEstimations <- dataset %>%
-    mutate(
-      u_1 = ifelse(is.na(user_number), mean(userMatrix[,1]), userMatrix[user_number,1]),
-      u_2 = ifelse(is.na(user_number), mean(userMatrix[,2]), userMatrix[user_number,2]),
-      m_1 = ifelse(is.na(movie_number), mean(movieMatrix[,1]), movieMatrix[movie_number,1]),
-      m_2 = ifelse(is.na(movie_number), mean(movieMatrix[,2]), movieMatrix[movie_number,2]),
-    ) %>%
-    mutate(rating_hat = u_1 * m_1 + u_2 * m_2) %>%
+    mutate(rating_hat = map2(user_number, movie_number, getRatingHat, userMatrix, movieMatrix)) %>%
+    unnest(rating_hat) %>%
     mutate(rating_hat = ifelse(rating_hat > 5, 5, rating_hat))
   
   datasetWithEstimations
@@ -214,27 +220,31 @@ edx_validation_with_numbers <- applyUsersAndMoviesNumberFromOneDatasetToAnother(
 USERS_REG <- edx_train_with_numbers %>% group_by(userId) %>% summarise(n=n()) %>% nrow()
 MOVIES_REG <- edx_train_with_numbers %>% group_by(movieId) %>% summarise(n=n()) %>% nrow()
 
-lambdas <- c(0.1, 0.5, 1, 2, 3, 5)
-epochs <- 100
+lambdas <- c(1, 2, 3, 5)
+epochs <- 50
 
 rmses <- numeric(length(lambdas))
 
 for (lambda_idx in 1:length(lambdas)) {
   lambda = lambdas[lambda_idx]
   
-  userFactMatrix <- initialiseUserFactorizationMatrix(nrow = USERS_REG, ncol = 2)
-  movieFactMatrix <- initialiseMovieFactorizationMatrix(nrow = MOVIES_REG, ncol = 2)
+  userFactMatrix <- initialiseUserFactorizationMatrix(nrow = USERS_REG, ncol = 5)
+  movieFactMatrix <- initialiseMovieFactorizationMatrix(nrow = MOVIES_REG, ncol = 5)
   
   for (epoch in 1:epochs) {
-    userFactMatrix <- update2ColUserFactorizationMatrix(edx_train_with_numbers, lambda, userFactMatrix, movieFactMatrix)
-    movieFactMatrix <- update2ColMovieFactorizationMatrix(edx_train_with_numbers, lambda, userFactMatrix, movieFactMatrix)
+    userFactMatrix <- updateUserFactorizationMatrix(edx_train_with_numbers, lambda, userFactMatrix, movieFactMatrix)
+    movieFactMatrix <- updateMovieFactorizationMatrix(edx_train_with_numbers, lambda, userFactMatrix, movieFactMatrix)
+    
+    edx_validation_with_estimations <- getRankEstimations(edx_validation_with_numbers, userFactMatrix, movieFactMatrix)
+    
+    print(c("EPOCH - ", epoch, "RMSE - ", RMSE(edx_validation_with_estimations$rating, edx_validation_with_estimations$rating_hat)))
   }
   
   # 3.1 COUNT RMSE FOR PARTICULAR LAMBDA
-  edx_validation_with_estimations <- get2RankEstimations(edx_validation_with_numbers, userFactMatrix, movieFactMatrix)
-
+  edx_validation_with_estimations <- getRankEstimations(edx_validation_with_numbers, userFactMatrix, movieFactMatrix)
+  
   rmses[lambda_idx] <- RMSE(edx_validation_with_estimations$rating, edx_validation_with_estimations$rating_hat)
-    
+  
   print(c("LAMBDA - ", lambda, "RMSE - ", rmses[lambda_idx]))
 }
 
@@ -254,20 +264,19 @@ validation_with_numbers <- applyUsersAndMoviesNumberFromOneDatasetToAnother(edx_
 USERS_TRAIN <- edx_with_numbers %>% group_by(userId) %>% summarise(n=n()) %>% nrow()
 MOVIES_TRAIN <- edx_with_numbers %>% group_by(movieId) %>% summarise(n=n()) %>% nrow()
 
-userFactMatrixTrain <- initialiseUserFactorizationMatrix(nrow = USERS_TRAIN, ncol = 2)
-movieFactMatrixTrain <- initialiseMovieFactorizationMatrix(nrow = MOVIES_TRAIN, ncol = 2)
+userFactMatrixTrain <- initialiseUserFactorizationMatrix(nrow = USERS_TRAIN, ncol = 10)
+movieFactMatrixTrain <- initialiseMovieFactorizationMatrix(nrow = MOVIES_TRAIN, ncol = 10)
 
 for (epoch in 1:epochs) {
-  userFactMatrixTrain <- update2ColUserFactorizationMatrix(edx_with_numbers, BEST_LAMBDA, userFactMatrixTrain, movieFactMatrixTrain)
-  movieFactMatrixTrain <- update2ColMovieFactorizationMatrix(edx_with_numbers, BEST_LAMBDA, userFactMatrixTrain, movieFactMatrixTrain)
+  userFactMatrixTrain <- updateUserFactorizationMatrix(edx_with_numbers, BEST_LAMBDA, userFactMatrixTrain, movieFactMatrixTrain)
+  movieFactMatrixTrain <- updateMovieFactorizationMatrix(edx_with_numbers, BEST_LAMBDA, userFactMatrixTrain, movieFactMatrixTrain)
 }
 
 #
 # 6. VALIDATION
 #
-validation_with_estimations <- get2RankEstimations(validation_with_numbers, userFactMatrixTrain, movieFactMatrixTrain)
+validation_with_estimations <- getRankEstimations(validation_with_numbers, userFactMatrixTrain, movieFactMatrixTrain)
 
 validation_rmse <- RMSE(validation_with_estimations$rating, validation_with_estimations$rating_hat)
 
 print(c('VALIDATION RMSE - ', validation_rmse))
-
