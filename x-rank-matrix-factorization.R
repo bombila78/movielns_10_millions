@@ -83,7 +83,6 @@ applyUsersAndMoviesNumberFromOneDatasetToAnother <- function(datasetWithNumbers,
     left_join(distinct(train_movie_ids_and_numbers), by="movieId")
 }
 
-MEAN_RATING = mean(edx$rating)
 # Randomly initializes 1 vector for factorization matrix
 # Depends on matrix rank
 randomlyInitialiseFactorizationVector <- function(length, matrixRank = 2, maxRating = 5) {
@@ -214,39 +213,63 @@ edx_train_with_numbers <- setArrangedNumberToUsersAndMovies(edx_train)
 edx_validation_with_numbers <- applyUsersAndMoviesNumberFromOneDatasetToAnother(edx_train_with_numbers, edx_validation)
 
 
+
 #
 # 3. RUN REGULARIZATION TRAINING
 #
 USERS_REG <- edx_train_with_numbers %>% group_by(userId) %>% summarise(n=n()) %>% nrow()
 MOVIES_REG <- edx_train_with_numbers %>% group_by(movieId) %>% summarise(n=n()) %>% nrow()
 
-lambdas <- c(1, 2, 3, 5)
-epochs <- 50
+epochs <- 30
 
-rmses <- numeric(length(lambdas))
+ranks <- c(1,2,3,5,7,10)
+
+FIXED_LAMBDA <- 2
+
+matrix_reg_rmses <- numeric(length(ranks))
+
+for (rank_idx in 1:length(ranks)) {
+  matrix_rank = ranks[rank_idx]
+  
+  userFactMatrix <- initialiseUserFactorizationMatrix(nrow = USERS_REG, ncol = matrix_rank)
+  movieFactMatrix <- initialiseMovieFactorizationMatrix(nrow = MOVIES_REG, ncol = matrix_rank)
+  
+  for (epoch in 1:epochs) {
+    userFactMatrix <- updateUserFactorizationMatrix(edx_train_with_numbers, FIXED_LAMBDA, userFactMatrix, movieFactMatrix)
+    movieFactMatrix <- updateMovieFactorizationMatrix(edx_train_with_numbers, FIXED_LAMBDA, userFactMatrix, movieFactMatrix)
+  }
+  
+  # 3.1 COUNT RMSE FOR PARTICULAR MATRIX RANK AFTER 30 EPOCHS
+  edx_validation_with_estimations <- getRankEstimations(edx_validation_with_numbers, userFactMatrix, movieFactMatrix)
+  
+  matrix_reg_rmses[rank_idx] <- RMSE(edx_validation_with_estimations$rating, edx_validation_with_estimations$rating_hat)
+}
+
+plot(ranks, matrix_reg_rmses)
+# Define best matrix rank after regularization
+BEST_RANK <- 5 
+
+lambdas <- c(1, 2, 3, 5)
+lambda_reg_rmses <-numeric(length(lambdas))
 
 for (lambda_idx in 1:length(lambdas)) {
   lambda = lambdas[lambda_idx]
   
-  userFactMatrix <- initialiseUserFactorizationMatrix(nrow = USERS_REG, ncol = 5)
-  movieFactMatrix <- initialiseMovieFactorizationMatrix(nrow = MOVIES_REG, ncol = 5)
+  userFactMatrix <- initialiseUserFactorizationMatrix(nrow = USERS_REG, ncol = BEST_RANK)
+  movieFactMatrix <- initialiseMovieFactorizationMatrix(nrow = MOVIES_REG, ncol = BEST_RANK)
   
   for (epoch in 1:epochs) {
     userFactMatrix <- updateUserFactorizationMatrix(edx_train_with_numbers, lambda, userFactMatrix, movieFactMatrix)
     movieFactMatrix <- updateMovieFactorizationMatrix(edx_train_with_numbers, lambda, userFactMatrix, movieFactMatrix)
-    
-    edx_validation_with_estimations <- getRankEstimations(edx_validation_with_numbers, userFactMatrix, movieFactMatrix)
-    
-    print(c("EPOCH - ", epoch, "RMSE - ", RMSE(edx_validation_with_estimations$rating, edx_validation_with_estimations$rating_hat)))
   }
   
   # 3.1 COUNT RMSE FOR PARTICULAR LAMBDA
   edx_validation_with_estimations <- getRankEstimations(edx_validation_with_numbers, userFactMatrix, movieFactMatrix)
   
-  rmses[lambda_idx] <- RMSE(edx_validation_with_estimations$rating, edx_validation_with_estimations$rating_hat)
-  
-  print(c("LAMBDA - ", lambda, "RMSE - ", rmses[lambda_idx]))
+  lambda_reg_rmses[lambda_idx] <- RMSE(edx_validation_with_estimations$rating, edx_validation_with_estimations$rating_hat)
 }
+
+plot(lambdas, lambda_reg_rmses)
 
 # Define best lambda after regularization
 BEST_LAMBDA <- lambdas[which.min(rmses)] 
@@ -264,10 +287,12 @@ validation_with_numbers <- applyUsersAndMoviesNumberFromOneDatasetToAnother(edx_
 USERS_TRAIN <- edx_with_numbers %>% group_by(userId) %>% summarise(n=n()) %>% nrow()
 MOVIES_TRAIN <- edx_with_numbers %>% group_by(movieId) %>% summarise(n=n()) %>% nrow()
 
-userFactMatrixTrain <- initialiseUserFactorizationMatrix(nrow = USERS_TRAIN, ncol = 10)
-movieFactMatrixTrain <- initialiseMovieFactorizationMatrix(nrow = MOVIES_TRAIN, ncol = 10)
+userFactMatrixTrain <- initialiseUserFactorizationMatrix(nrow = USERS_TRAIN, ncol = BEST_RANK)
+movieFactMatrixTrain <- initialiseMovieFactorizationMatrix(nrow = MOVIES_TRAIN, ncol = BEST_RANK)
 
-for (epoch in 1:epochs) {
+validation_epochs <- 70
+
+for (epoch in 1:validation_epochs) {
   userFactMatrixTrain <- updateUserFactorizationMatrix(edx_with_numbers, BEST_LAMBDA, userFactMatrixTrain, movieFactMatrixTrain)
   movieFactMatrixTrain <- updateMovieFactorizationMatrix(edx_with_numbers, BEST_LAMBDA, userFactMatrixTrain, movieFactMatrixTrain)
 }
